@@ -1,0 +1,120 @@
+import openseespy.opensees as op
+
+# Define model parameters
+num_bays = 2
+bay_length = 4
+num_stories = 5
+story_height = 3
+
+# Material properties for steel (assuming ST37 steel)
+A_steel = 500  # Cross-sectional area (mm^2)
+E_steel = 33.3e9  # Young's modulus for steel (Pa) - Reduced stiffness
+G_steel = 38.5e9  # Shear modulus for steel (Pa) - Reduced stiffness
+J_steel = 5000  # Moment of inertia for steel (mm^4)
+M_steel = 0.1  # Mass per unit length for steel (kg/m)
+
+# Material properties for the viscoelastic damper
+E_damper = 1.5e6  # Young's modulus for damper (Pa)
+G_damper = 1.0e6  # Shear modulus for damper (Pa)
+A_damper = 500     # Cross-sectional area of damper (mm^2)
+J_damper = 5000    # Moment of inertia for damper (mm^4)
+
+# Define nodes for the viscoelastic dampers and their connections to the beams
+damper_nodes = []  # List to store damper nodes
+
+# Loop through each bay and place a damper in the middle
+for story in range(num_stories):
+    for bay in range(num_bays):
+        # Calculate the coordinates of the middle of the bay
+        x_middle = (bay * bay_length) + (bay_length / 2)
+        y_middle = (story * story_height) + (story_height / 2)
+
+        # Define the node IDs for the damper
+        damper_node1 = num_bays * (num_stories + 1) + (bay * num_stories) + story + 1
+        damper_node2 = damper_node1 + 1
+        
+        # Add damper nodes to the list
+        damper_nodes.append((damper_node1, damper_node2))
+
+        # Create the viscoelastic damper element
+        ele_id_damper = num_bays * num_stories * num_bays + (bay * num_stories) + story + 1
+        op.geomTransf('Linear', ele_id_damper)
+        op.element('elasticBeamColumn', ele_id_damper, damper_node1, damper_node2, [A_damper, E_damper, G_damper, J_damper])
+
+# Design a small foundation for the ground floor dampers
+foundation_nodes = []  # List to store foundation nodes
+
+# Loop through each bay and place a foundation for the ground floor
+for bay in range(num_bays):
+    # Calculate the coordinates of the middle of the bay
+    x_middle = (bay * bay_length) + (bay_length / 2)
+    
+    # Define the node ID for the foundation
+    foundation_node = bay + 1
+    
+    # Add foundation node to the list
+    foundation_nodes.append(foundation_node)
+    
+    # Create the foundation node
+    op.node(foundation_node, x_middle, 0, 0)
+
+    # Fix the foundation node in both horizontal directions
+    op.fix(foundation_node, 1, 1, 0)
+
+# Connect the dampers to the foundation
+for i, (damper_node1, damper_node2) in enumerate(damper_nodes, start=1):
+    ele_id_foundation = num_bays * num_stories * num_bays + len(damper_nodes) + i  # Unique element ID for foundation connection
+    op.geomTransf('Linear', ele_id_foundation)
+    op.element('elasticBeamColumn', ele_id_foundation, foundation_nodes[i-1], damper_node1, [A_damper, E_damper, G_damper, J_damper])
+
+# Create OpenSees model
+op.wipe()
+op.model('basic', '-ndm', 2, '-ndf', 3)
+
+# Define nodes
+for story in range(num_stories + 1):
+    for bay in range(num_bays + 1):
+        node_id = bay + 1 + (story * (num_bays + 1))
+        op.node(node_id, bay * bay_length, story * story_height, 0)
+
+# Define columns
+for story in range(num_stories):
+    for bay in range(num_bays):
+        ele_id = bay + 1 + (story * num_bays)
+        op.geomTransf('Linear', ele_id)
+        op.element('elasticBeamColumn', ele_id, bay + 1 + (story * (num_bays + 1)), bay + 2 + (story * (num_bays + 1)), [A_steel, E_steel, G_steel, J_steel], '-mass', M_steel)
+
+# Apply lateral loads to the structure
+# You can apply lateral loads incrementally or use pushover analysis for nonlinear behavior
+
+# Define boundary conditions (fixities)
+# All nodes at the base are fully fixed
+for bay in range(num_bays + 1):
+    node_id = bay + 1
+    op.fix(node_id, 1, 1, 1)
+
+# Define the pushover analysis
+op.timeSeries('Linear', 1)
+op.pattern('Plain', 1, 1)
+op.load(1, 3.0, 0.0, 0.0)  # Increase lateral load to 3.0 kN
+op.constraints('Plain')
+op.numberer('RCM')
+op.system('BandGeneral')
+op.test('NormDispIncr', 1.0e-3, 10)
+op.algorithm('Newton')
+op.integrator('DisplacementControl', 1)
+op.analysis('Static')
+ok = op.analyze(1)
+
+# Post-processing
+max_drift = op.nodeDisp(num_stories * (num_bays + 1) + 1, 1)
+performance_point = max_drift
+
+# Calculate the percentage drift
+building_height = num_stories * story_height
+percentage_drift = (max_drift / building_height) * 100
+
+# Output results
+print(f"Maximum Drift: {max_drift}")
+print(f"Performance Point: {performance_point}")
+print(f"Percentage Drift: {percentage_drift:.2f}%")
